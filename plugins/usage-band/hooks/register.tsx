@@ -1,11 +1,10 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Context, Limit, Snapshot, Tokens } from '../types'
+import type { Context, Limit, Snapshot } from '../types'
 
 const snapshot = atom({ plugin: 'usage-band', key: 'snapshot' } as const, null)
 const lastSessionUsd = atom({ plugin: 'usage-band', key: 'lastSessionUsd' } as const, -1)
-const tokens = atom({ plugin: 'usage-band', key: 'tokens' } as const, { input: 0, output: 0, cacheRead: 0 })
 const contextWarned = atom({ plugin: 'usage-band', key: 'contextWarned' } as const, false)
 
 // Avisa cuando el contexto está a menos de esta fracción de la compactación.
@@ -118,9 +117,6 @@ const ICON = {
   gauge: 'M2.5 11a5.5 5.5 0 1 1 11 0M8 11l2.6-3.2',
   calendar: 'M3.5 3h9a1.5 1.5 0 0 1 1.5 1.5v8a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 12.5v-8A1.5 1.5 0 0 1 3.5 3zM2 6.5h12M5 1.5v3M11 1.5v3',
   clock: 'M8 2.5a5.5 5.5 0 1 1-5.2 3.7M2.5 2.5v3.7h3.7M8 5v3l2 1.5',
-  up: 'M8 10V2.5M5 5.5l3-3 3 3M2.5 10v3.5h11V10',
-  down: 'M8 2.5V10M5 7l3 3 3-3M2.5 10v3.5h11V10',
-  layers: 'M8 2l6 3-6 3-6-3zM2 8l6 3 6-3M2 11l6 3 6-3',
   context: 'M3 2.5h10a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1zM4.5 5.5h7M4.5 8h7M4.5 10.5h4',
   coin: 'M8 2a6 6 0 1 1 0 12A6 6 0 0 1 8 2zM9.8 6.2C9.4 5.6 8.8 5.3 8 5.3c-1 0-1.7.5-1.7 1.3 0 1.8 3.6.9 3.6 2.8 0 .8-.8 1.3-1.9 1.3-.8 0-1.5-.3-1.9-.9M8 4.3v1M8 10.7v1',
 }
@@ -162,7 +158,7 @@ function pill(x: number, cls: string, pieces: Piece[]) {
   return { svg: out, w }
 }
 
-function buildSvg(snap: Snapshot, tok: Tokens, now: number) {
+function buildSvg(snap: Snapshot, now: number) {
   const groups: { cls: string; pieces: Piece[] }[] = []
 
   for (const l of snap.limits) {
@@ -196,8 +192,6 @@ function buildSvg(snap: Snapshot, tok: Tokens, now: number) {
     })
   }
 
-  groups.push({ cls: 'red', pieces: [{ t: 'icon', d: ICON.up }, { t: 'text', s: kfmt(tok.input) }] })
-  groups.push({ cls: 'green', pieces: [{ t: 'icon', d: ICON.down }, { t: 'text', s: kfmt(tok.output) }] })
   groups.push({
     cls: 'yellow',
     pieces: [
@@ -215,18 +209,14 @@ function buildSvg(snap: Snapshot, tok: Tokens, now: number) {
     .track{fill:#00000014}.mark{fill:#333}.sep{fill:#00000022}
     .bg.green{fill:#dcebe2}.ic.green{stroke:#3f8a62}.fill.green{fill:#8fb87a}
     .bg.purple{fill:#e6e1f6}.ic.purple{stroke:#7a5bd6}.fill.purple{fill:#8fb87a}
-    .bg.red{fill:#f4e0db}.ic.red{stroke:#c75a43}
-    .bg.blue{fill:#dfe3f8}.ic.blue{stroke:#5a6ed6}
     .bg.yellow{fill:#f3e9d1}.ic.yellow{stroke:#b5862a}
     .bg.teal{fill:#d8ecec}.ic.teal{stroke:#2f8585}.fill.teal{fill:#5fb0ae}
     .fill.hot{fill:#d9694f}
     @media (prefers-color-scheme:dark){
       text{fill:#e8e8e8}.dim{fill:#a8a8a8}
       .track{fill:#ffffff1f}.mark{fill:#eee}.sep{fill:#ffffff2a}
-      .bg.green{fill:#22382c}.bg.purple{fill:#302a48}.bg.red{fill:#43291f}
-      .bg.blue{fill:#262d4a}.bg.yellow{fill:#3e3420}.bg.teal{fill:#1f3a3a}
-      .ic.green{stroke:#7cc69c}.ic.purple{stroke:#a993f0}.ic.red{stroke:#ec8a74}
-      .ic.blue{stroke:#8fa0f2}.ic.yellow{stroke:#e0b45a}.ic.teal{stroke:#6fcaca}
+      .bg.green{fill:#22382c}.bg.purple{fill:#302a48}.bg.yellow{fill:#3e3420}.bg.teal{fill:#1f3a3a}
+      .ic.green{stroke:#7cc69c}.ic.purple{stroke:#a993f0}.ic.yellow{stroke:#e0b45a}.ic.teal{stroke:#6fcaca}
     }`
 
   // Una SVG por pastilla, para que la barra las reparta a lo ancho.
@@ -264,25 +254,12 @@ export const register: Register = on => {
     return result
   })
 
-  on('turn.complete', async ($, e, next) => {
-    const u = e.usage
-    if (u) {
-      await update($, tokens, t => ({
-        input: t.input + u.input_tokens + u.cache_creation_input_tokens,
-        output: t.output + u.output_tokens,
-        cacheRead: t.cacheRead + u.cache_read_input_tokens,
-      }))
-    }
-    return next(e)
-  })
-
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const snap = await read($, snapshot)
     if (e.props.hasSurvey || snap === null) {
       return next(e)
     }
 
-    const tok = await read($, tokens)
     const now = await $.clock.now()
 
     if (e.surface !== 'terminal') {
@@ -294,14 +271,10 @@ export const register: Register = on => {
             ? [`contexto ${snap.context.percent ?? 0}% (${kfmt(snap.context.tokens ?? 0)} de ${kfmt(snap.context.window)})`]
             : [],
         )
-        .concat(
-          `tokens de entrada ${kfmt(tok.input)}`,
-          `tokens de salida ${kfmt(tok.output)}`,
-          `coste sesión ${snap.sessionUsd === null ? '—' : usd(snap.sessionUsd)}, hoy ${usd(snap.todayUsd)}`,
-        )
+        .concat(`coste sesión ${snap.sessionUsd === null ? '—' : usd(snap.sessionUsd)}, hoy ${usd(snap.todayUsd)}`)
       return (
         <Box flexDirection="row" justifyContent="space-between" alignItems="center" flexGrow={1} width="100%">
-          {buildSvg(snap, tok, now).map((p, i) => (
+          {buildSvg(snap, now).map((p, i) => (
             <Svg key={p.key} source={p.source} alt={alts[i]} width={p.width} height={H} />
           ))}
         </Box>
@@ -336,7 +309,7 @@ export const register: Register = on => {
           </Text>
         )}
         <Text dimColor>
-          ↑{kfmt(tok.input)} ↓{kfmt(tok.output)}   {snap.sessionUsd === null ? '—' : usd(snap.sessionUsd)} · hoy {usd(snap.todayUsd)}
+          {snap.sessionUsd === null ? '—' : usd(snap.sessionUsd)} · hoy {usd(snap.todayUsd)}
         </Text>
       </Box>
     )

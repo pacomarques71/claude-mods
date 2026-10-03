@@ -1,6 +1,6 @@
 {
   "name": "usage-band",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Barra sobre el prompt con el uso restante (5 h / 7 días) y el coste en USD de la sesión y del día",
   "types": "./types/index.d.ts"
 }

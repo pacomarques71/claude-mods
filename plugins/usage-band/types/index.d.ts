@@ -15,14 +15,11 @@ export type Snapshot = {
   todayUsd: number
 }
 
-export type Tokens = { input: number; output: number; cacheRead: number }
-
 declare module 'claude-code' {
   interface PluginState {
     'usage-band': {
       snapshot: Snapshot | null
       lastSessionUsd: number
-      tokens: Tokens
       contextWarned: boolean
     }
   }
