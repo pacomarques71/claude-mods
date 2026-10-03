@@ -327,7 +327,7 @@ export const register: Register = on => {
     const ctx = snap.context
     const ctxPct = ctx?.percent ?? 0
     const ctxFilled = Math.round(ctxPct / 10)
-    const ctxNear = ctx !== null && ctxPct / 100 >= (compactFraction(ctx) ?? 1) - COMPACT_WARN_MARGIN
+    const ctxNear = !!ctx && ctxPct / 100 >= (compactFraction(ctx) ?? 1) - COMPACT_WARN_MARGIN
 
     return (
       <Box flexDirection="row">
