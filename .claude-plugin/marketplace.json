@@ -1,0 +1,11 @@
+﻿{
+  "name": "pacom-mods",
+  "owner": { "name": "pacomarques71" },
+  "plugins": [
+    {
+      "name": "usage-band",
+      "source": "./plugins/usage-band",
+      "description": "Barra sobre el prompt con el uso restante (5 h / 7 dÃ­as), tokens y coste en USD"
+    }
+  ]
+}
