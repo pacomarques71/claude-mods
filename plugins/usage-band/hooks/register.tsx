@@ -198,7 +198,6 @@ function buildSvg(snap: Snapshot, tok: Tokens, now: number) {
 
   groups.push({ cls: 'red', pieces: [{ t: 'icon', d: ICON.up }, { t: 'text', s: kfmt(tok.input) }] })
   groups.push({ cls: 'green', pieces: [{ t: 'icon', d: ICON.down }, { t: 'text', s: kfmt(tok.output) }] })
-  groups.push({ cls: 'blue', pieces: [{ t: 'icon', d: ICON.layers }, { t: 'text', s: kfmt(tok.cacheRead) }] })
   groups.push({
     cls: 'yellow',
     pieces: [
@@ -298,7 +297,6 @@ export const register: Register = on => {
         .concat(
           `tokens de entrada ${kfmt(tok.input)}`,
           `tokens de salida ${kfmt(tok.output)}`,
-          `tokens de caché ${kfmt(tok.cacheRead)}`,
           `coste sesión ${snap.sessionUsd === null ? '—' : usd(snap.sessionUsd)}, hoy ${usd(snap.todayUsd)}`,
         )
       return (
@@ -338,7 +336,7 @@ export const register: Register = on => {
           </Text>
         )}
         <Text dimColor>
-          ↑{kfmt(tok.input)} ↓{kfmt(tok.output)} ≋{kfmt(tok.cacheRead)}   {snap.sessionUsd === null ? '—' : usd(snap.sessionUsd)} · hoy {usd(snap.todayUsd)}
+          ↑{kfmt(tok.input)} ↓{kfmt(tok.output)}   {snap.sessionUsd === null ? '—' : usd(snap.sessionUsd)} · hoy {usd(snap.todayUsd)}
         </Text>
       </Box>
     )
