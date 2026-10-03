@@ -1,11 +1,15 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Limit, Snapshot, Tokens } from '../types'
+import type { Context, Limit, Snapshot, Tokens } from '../types'
 
 const snapshot = atom({ plugin: 'usage-band', key: 'snapshot' } as const, null)
 const lastSessionUsd = atom({ plugin: 'usage-band', key: 'lastSessionUsd' } as const, -1)
 const tokens = atom({ plugin: 'usage-band', key: 'tokens' } as const, { input: 0, output: 0, cacheRead: 0 })
+const contextWarned = atom({ plugin: 'usage-band', key: 'contextWarned' } as const, false)
+
+// Avisa cuando el contexto está a menos de esta fracción de la compactación.
+const COMPACT_WARN_MARGIN = 0.1
 
 const WINDOW_MS: Record<string, number> = { five_hour: 5 * 3600e3, seven_day: 7 * 86400e3 }
 const LABEL: Record<string, string> = { five_hour: '5h', seven_day: '7d', spend_limit: '$' }
@@ -46,7 +50,39 @@ function elapsed(l: Limit, now: number) {
 
 // ---------- medición ----------
 
-async function measure($: EngineInterface, limits: Limit[], sessionCost: number | null) {
+// Fracción de la ventana a la que se compacta (marca vertical de la barra de contexto).
+function compactFraction(c: Context) {
+  return c.compactAt ? Math.min(1, c.compactAt / c.window) : null
+}
+
+async function readContext($: EngineInterface): Promise<Context> {
+  // 'summary' estima en local: no envía ninguna petición a la API.
+  const u = await $.session.usage({ breakdown: 'summary' })
+  const b = u.context.breakdown
+  return {
+    tokens: u.context.tokens,
+    window: u.context.window,
+    percent: u.context.percent,
+    compactAt: b?.isAutoCompactEnabled ? b.autoCompactThreshold : undefined,
+  }
+}
+
+async function warnContext($: EngineInterface, c: Context) {
+  if (c.percent === undefined) return
+  const limit = compactFraction(c) ?? 1
+  const isNear = c.percent / 100 >= limit - COMPACT_WARN_MARGIN
+  const warned = await read($, contextWarned)
+  if (isNear && !warned) {
+    $.ui.toast(
+      c.compactAt
+        ? `Contexto al ${c.percent}%: se compactará pronto`
+        : `Contexto al ${c.percent}%: la conversación se acerca al límite`,
+    )
+  }
+  if (isNear !== warned) await update($, contextWarned, () => isNear)
+}
+
+async function measure($: EngineInterface, limits: Limit[], context: Context, sessionCost: number | null) {
   const now = await $.clock.now()
   const key = dayKey(now)
   let today = Number((await $.store.get(key)) ?? 0)
@@ -62,7 +98,8 @@ async function measure($: EngineInterface, limits: Limit[], sessionCost: number 
     await update($, lastSessionUsd, () => sessionCost)
   }
 
-  const snap: Snapshot = { limits, sessionUsd: sessionCost, todayUsd: today }
+  await warnContext($, context)
+  const snap: Snapshot = { limits, context, sessionUsd: sessionCost, todayUsd: today }
   await update($, snapshot, () => snap)
 }
 
@@ -71,7 +108,7 @@ async function measure($: EngineInterface, limits: Limit[], sessionCost: number 
 type Piece =
   | { t: 'icon'; d: string }
   | { t: 'text'; s: string; bold?: boolean; dim?: boolean }
-  | { t: 'bar'; pct: number; mark: number | null }
+  | { t: 'bar'; pct: number; mark: number | null; hot?: boolean }
   | { t: 'sep' }
 
 const CH = 7.6 // ancho aprox. de un carácter monoespaciado a 13px
@@ -84,6 +121,7 @@ const ICON = {
   up: 'M8 10V2.5M5 5.5l3-3 3 3M2.5 10v3.5h11V10',
   down: 'M8 2.5V10M5 7l3 3 3-3M2.5 10v3.5h11V10',
   layers: 'M8 2l6 3-6 3-6-3zM2 8l6 3 6-3M2 11l6 3 6-3',
+  context: 'M3 2.5h10a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1zM4.5 5.5h7M4.5 8h7M4.5 10.5h4',
   coin: 'M8 2a6 6 0 1 1 0 12A6 6 0 0 1 8 2zM9.8 6.2C9.4 5.6 8.8 5.3 8 5.3c-1 0-1.7.5-1.7 1.3 0 1.8 3.6.9 3.6 2.8 0 .8-.8 1.3-1.9 1.3-.8 0-1.5-.3-1.9-.9M8 4.3v1M8 10.7v1',
 }
 
@@ -112,7 +150,7 @@ function pill(x: number, cls: string, pieces: Piece[]) {
       const y = H / 2 - 3
       const fill = Math.max(0, Math.min(1, p.pct / 100)) * pw
       out += `<rect class="track" x="${cx}" y="${y}" width="${pw}" height="6" rx="3"/>`
-      out += `<rect class="fill ${p.pct >= 80 ? 'hot' : cls}" x="${cx}" y="${y}" width="${fill}" height="6" rx="3"/>`
+      out += `<rect class="fill ${(p.hot ?? p.pct >= 80) ? 'hot' : cls}" x="${cx}" y="${y}" width="${fill}" height="6" rx="3"/>`
       if (p.mark !== null) {
         out += `<rect class="mark" x="${cx + p.mark * pw - 1}" y="${H / 2 - 7}" width="2" height="14" rx="1"/>`
       }
@@ -140,6 +178,24 @@ function buildSvg(snap: Snapshot, tok: Tokens, now: number) {
     groups.push({ cls: l.kind === 'seven_day' ? 'purple' : 'green', pieces })
   }
 
+  const ctx = snap.context
+  if (ctx) {
+    const pct = ctx.percent ?? 0
+    const mark = compactFraction(ctx)
+    const isNear = pct / 100 >= (mark ?? 1) - COMPACT_WARN_MARGIN
+    groups.push({
+      cls: 'teal',
+      pieces: [
+        { t: 'icon', d: ICON.context },
+        { t: 'text', s: 'ctx', dim: true },
+        { t: 'bar', pct, mark, hot: isNear },
+        { t: 'text', s: ctx.percent === undefined ? '—' : `${pct}%`, bold: true },
+        { t: 'sep' },
+        { t: 'text', s: `${kfmt(ctx.tokens ?? 0)}/${kfmt(ctx.window)}`, dim: true },
+      ],
+    })
+  }
+
   groups.push({ cls: 'red', pieces: [{ t: 'icon', d: ICON.up }, { t: 'text', s: kfmt(tok.input) }] })
   groups.push({ cls: 'green', pieces: [{ t: 'icon', d: ICON.down }, { t: 'text', s: kfmt(tok.output) }] })
   groups.push({ cls: 'blue', pieces: [{ t: 'icon', d: ICON.layers }, { t: 'text', s: kfmt(tok.cacheRead) }] })
@@ -163,14 +219,15 @@ function buildSvg(snap: Snapshot, tok: Tokens, now: number) {
     .bg.red{fill:#f4e0db}.ic.red{stroke:#c75a43}
     .bg.blue{fill:#dfe3f8}.ic.blue{stroke:#5a6ed6}
     .bg.yellow{fill:#f3e9d1}.ic.yellow{stroke:#b5862a}
+    .bg.teal{fill:#d8ecec}.ic.teal{stroke:#2f8585}.fill.teal{fill:#5fb0ae}
     .fill.hot{fill:#d9694f}
     @media (prefers-color-scheme:dark){
       text{fill:#e8e8e8}.dim{fill:#a8a8a8}
       .track{fill:#ffffff1f}.mark{fill:#eee}.sep{fill:#ffffff2a}
       .bg.green{fill:#22382c}.bg.purple{fill:#302a48}.bg.red{fill:#43291f}
-      .bg.blue{fill:#262d4a}.bg.yellow{fill:#3e3420}
+      .bg.blue{fill:#262d4a}.bg.yellow{fill:#3e3420}.bg.teal{fill:#1f3a3a}
       .ic.green{stroke:#7cc69c}.ic.purple{stroke:#a993f0}.ic.red{stroke:#ec8a74}
-      .ic.blue{stroke:#8fa0f2}.ic.yellow{stroke:#e0b45a}
+      .ic.blue{stroke:#8fa0f2}.ic.yellow{stroke:#e0b45a}.ic.teal{stroke:#6fcaca}
     }`
 
   // Una SVG por pastilla, para que la barra las reparta a lo ancho.
@@ -190,21 +247,22 @@ function buildSvg(snap: Snapshot, tok: Tokens, now: number) {
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const result = await next(e)
-    // Corrección única: el total de hoy se contó sin el gasto previo a cargar el mod.
-    // Se rehace desde cero; la siguiente medida suma el coste entero de la sesión.
-    if (!(await $.store.get('fix:pre-load-cost'))) {
-      await $.store.set('fix:pre-load-cost', true)
-      await $.store.set(dayKey(await $.clock.now()), 0)
-      await update($, lastSessionUsd, () => -1)
-    }
     const u = await $.session.usage()
-    await measure($, u.rateLimits, u.cost?.usd ?? null)
+    await measure($, u.rateLimits, await readContext($), u.cost?.usd ?? null)
     return result
   })
 
   on('session.measure', async ($, e, next) => {
-    await measure($, e.rateLimits, e.cost?.usd ?? null)
+    await measure($, e.rateLimits, await readContext($), e.cost?.usd ?? null)
     return next(e)
+  })
+
+  // Tras compactar, el contexto baja: se vuelve a medir para que la barra lo refleje.
+  on('session.compact', async ($, e, next) => {
+    const result = await next(e)
+    const u = await $.session.usage()
+    await measure($, u.rateLimits, await readContext($), u.cost?.usd ?? null)
+    return result
   })
 
   on('turn.complete', async ($, e, next) => {
@@ -232,6 +290,11 @@ export const register: Register = on => {
       const { Box, Svg } = $.ui.resolve(e)
       const alts = snap.limits
         .map(l => `${LABEL[l.kind] ?? l.kind} ${Math.round(l.percentUsed)}% usado`)
+        .concat(
+          snap.context
+            ? [`contexto ${snap.context.percent ?? 0}% (${kfmt(snap.context.tokens ?? 0)} de ${kfmt(snap.context.window)})`]
+            : [],
+        )
         .concat(
           `tokens de entrada ${kfmt(tok.input)}`,
           `tokens de salida ${kfmt(tok.output)}`,
@@ -261,9 +324,19 @@ export const register: Register = on => {
       )
     })
 
+    const ctx = snap.context
+    const ctxPct = ctx?.percent ?? 0
+    const ctxFilled = Math.round(ctxPct / 10)
+    const ctxNear = ctx !== null && ctxPct / 100 >= (compactFraction(ctx) ?? 1) - COMPACT_WARN_MARGIN
+
     return (
       <Box flexDirection="row">
         {limits}
+        {ctx && (
+          <Text color={ctxNear ? 'red' : undefined}>
+            ctx {'█'.repeat(ctxFilled) + '░'.repeat(10 - ctxFilled)} {ctxPct}%{'   '}
+          </Text>
+        )}
         <Text dimColor>
           ↑{kfmt(tok.input)} ↓{kfmt(tok.output)} ≋{kfmt(tok.cacheRead)}   {snap.sessionUsd === null ? '—' : usd(snap.sessionUsd)} · hoy {usd(snap.todayUsd)}
         </Text>
